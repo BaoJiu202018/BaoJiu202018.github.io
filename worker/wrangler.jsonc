@@ -1,0 +1,21 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "account_id": "cd7e07ec080bef7a6f71c542e1902b49",
+  "name": "jiuzhong202018-directory",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "vars": {
+    "ALLOWED_ORIGIN": "https://baojiu202018.github.io",
+    "AUTH_VERSION": "1",
+    "IMPORT_TARGET": "6b237404-6368-4750-bbba-57f3d9bc7784"
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "jiuzhong202018-directory",
+    "database_id": "6b237404-6368-4750-bbba-57f3d9bc7784",
+    "migrations_dir": "migrations"
+  }]
+}
