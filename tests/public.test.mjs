@@ -5,47 +5,46 @@ import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { releaseIssues, auditGit } from '../scripts/check-public.mjs'
+import { releaseIssues, auditGit, verifyEncryptedRecords } from '../scripts/check-public.mjs'
+import { encryptFixture, fixturePassword, staticFixtures } from './support.mjs'
+import { parseEncryptedFile } from '../public/assets/encrypted-directory.js'
 
-const api = "export const API_BASE = 'https://directory.fixture.workers.dev'\nexport const PREVIEW = false\n"
-const worker = {
-  account_id: 'a'.repeat(32),
-  vars: { ALLOWED_ORIGIN: 'https://baojiu202018.github.io', IMPORT_TARGET: '11111111-1111-4111-8111-111111111111' },
-  d1_databases: [{ binding: 'DB', database_id: '11111111-1111-4111-8111-111111111111' }],
-}
-const html = '2017级（2020届）18班 <b>2017</b><span>相遇的起点</span> 原18班微信群回复网站发布消息，联系发起人 共享口令无法识别个人 班外持有者也可能访问 保留30天 手动清理 原腾讯文档与原系统历史备份 境外处理'
+const config = "export const ENCRYPTED_DATA_PATH = 'assets/directory.encrypted.json'\nexport const PREVIEW = false\n"
+const html = '2017级（2020届）18班 <b>2017</b><span>相遇的起点</span> 原18班微信群回复网站发布消息，联系发起人 共享口令无法识别个人 班外持有者也可能访问 保留30天 手动清理 原腾讯文档与原系统历史备份 境外处理 口令不发送到服务器 公开 GitHub 仓库及其历史 离线尝试解密 没有服务端限流或访问撤销 更换口令不能使已下载的旧密文失效 只清除本页资料 原 Cloudflare Workers 与 D1 中的受保护资料副本仍保留'
 
-test('release accepts configured origins, matching database and required notices', () => {
-  assert.deepEqual(releaseIssues(api, worker, html), [])
+test('release accepts the fixed same-origin ciphertext and honest notices', () => {
+  assert.deepEqual(releaseIssues(config, html), [])
 })
 
-test('release rejects empty, local, non-HTTPS, credentialed, path and preview configurations', () => {
-  for (const value of ['', '/api', 'http://directory.fixture.workers.dev', 'https://localhost', 'https://directory.fixture.workers.dev/', 'https://directory.fixture.workers.dev/path', 'https://user@directory.fixture.workers.dev', 'https://directory.fixture.workers.dev?token=x']) {
-    const source = `export const API_BASE = '${value}'\nexport const PREVIEW = false\n`
-    assert.ok(releaseIssues(source, worker, html).includes('API_OR_PREVIEW_INVALID'))
+test('release rejects alternate paths, external origins, plaintext and preview', () => {
+  for (const value of ['', '/api', '../private/export.json', 'assets/plain.json', 'https://example.invalid/data.json', '//example.invalid/data.json', 'assets/directory.encrypted.json?key=x']) {
+    const source = `export const ENCRYPTED_DATA_PATH = '${value}'\nexport const PREVIEW = false\n`
+    assert.ok(releaseIssues(source, html).includes('ENCRYPTED_PATH_OR_PREVIEW_INVALID'))
   }
-  assert.ok(releaseIssues(api.replace('false', 'true'), worker, html).includes('API_OR_PREVIEW_INVALID'))
-  assert.ok(releaseIssues(api + '\nexport const EXTRA = 1', worker, html).includes('API_OR_PREVIEW_INVALID'))
+  for (const source of [config.replace('false', 'true'), config + '\nexport const EXTRA = 1', config.replace('ENCRYPTED_DATA_PATH', 'API_BASE')]) assert.ok(releaseIssues(source, html).includes('ENCRYPTED_PATH_OR_PREVIEW_INVALID'))
 })
 
-test('release rejects placeholder database, account, mismatched import target and CORS', () => {
-  for (const id of ['', 'not-a-uuid', '00000000-0000-0000-0000-000000000000']) {
-    const value = structuredClone(worker)
-    value.d1_databases[0].database_id = id
-    assert.ok(releaseIssues(api, value, html).includes('DATABASE_INVALID'))
-  }
-  for (const id of ['', '0'.repeat(32)]) assert.ok(releaseIssues(api, { ...worker, account_id: id }, html).includes('ACCOUNT_INVALID'))
-  const value = structuredClone(worker)
-  value.vars.IMPORT_TARGET = 'another-target'
-  value.vars.ALLOWED_ORIGIN = '*'
-  assert.deepEqual(releaseIssues(api, value, html), ['IMPORT_TARGET_MISMATCH', 'CORS_ORIGIN_INVALID'])
-  assert.ok(releaseIssues(api, {}, html).includes('DATABASE_INVALID'))
+test('release rejects stale server claims and missing encrypted privacy notices', () => {
+  for (const text of ['2020级', '拟托管', '拟使用', '上线前须核实', '口令由服务器校验', '口令更换后原会话失效']) assert.ok(releaseIssues(config, html + text).includes('UNFINISHED_COPY'))
+  for (const text of ['2017级（2020届）18班', '原18班微信群回复网站发布消息，联系发起人', '共享口令无法识别个人', '保留30天', '手动清理', '境外处理', '离线尝试解密', '只清除本页资料', '更换口令不能使已下载的旧密文失效', '没有服务端限流或访问撤销']) assert.ok(releaseIssues(config, html.replace(text, '')).includes('REQUIRED_COPY_MISSING'))
 })
 
-test('release rejects old class year, unfinished deployment copy and missing privacy notices', () => {
-  for (const text of ['2020级', '拟托管', '拟使用', '上线前须核实']) assert.ok(releaseIssues(api, worker, html + text).includes('UNFINISHED_COPY'))
-  for (const text of ['2017级（2020届）18班', '原18班微信群回复网站发布消息，联系发起人', '共享口令无法识别个人', '保留30天', '手动清理', '境外处理']) {
-    assert.ok(releaseIssues(api, worker, html.replace(text, '')).includes('REQUIRED_COPY_MISSING'))
+test('local encrypted comparison rejects changed files, rows and credentials', async () => {
+  const bytes = Buffer.from(JSON.stringify(encryptFixture()))
+  const records = staticFixtures.map(c => ({ ...c, _id: c.id }))
+  assert.equal(await verifyEncryptedRecords(bytes, bytes, records, fixturePassword), 'decrypted comparison performed')
+  await assert.rejects(verifyEncryptedRecords(bytes, Buffer.from('{}'), records, fixturePassword), /SOURCE_MISMATCH/)
+  await assert.rejects(verifyEncryptedRecords(bytes, bytes, records.slice(1), fixturePassword), /RECORDS_MISMATCH/)
+  await assert.rejects(verifyEncryptedRecords(bytes, bytes, records.map((c, i) => i ? c : { ...c, note: 'different' }), fixturePassword), /RECORDS_MISMATCH/)
+  await assert.rejects(verifyEncryptedRecords(bytes, bytes, records, 'wrong'), /口令不正确/)
+})
+
+test('deployed artifact has a valid envelope and client has no server or persistent storage', async () => {
+  parseEncryptedFile(await readFile(new URL('../public/assets/directory.encrypted.json', import.meta.url)))
+  for (const file of ['app.js', 'config.js', 'encrypted-directory.js']) {
+    const source = await readFile(new URL('../public/assets/' + file, import.meta.url), 'utf8')
+    execFileSync(process.execPath, ['--check', '--input-type=module'], { input: source, stdio: ['pipe', 'pipe', 'pipe'] })
+    assert.doesNotMatch(source, /workers\.dev|API_BASE|\/auth\/(?:login|logout)|localStorage|sessionStorage|indexedDB|serviceWorker/)
   }
 })
 

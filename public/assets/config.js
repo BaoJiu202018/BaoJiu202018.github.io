@@ -1,2 +1,2 @@
-export const API_BASE = 'https://jiuzhong202018-directory.yuandawang958.workers.dev'
+export const ENCRYPTED_DATA_PATH = 'assets/directory.encrypted.json'
 export const PREVIEW = false

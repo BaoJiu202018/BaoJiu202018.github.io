@@ -1,7 +1,7 @@
 import { getPlatformProxy } from 'wrangler'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { createHash } from 'node:crypto'
+import { createHash, createCipheriv, pbkdf2Sync, randomBytes } from 'node:crypto'
 
 export const fixturePassword = 'Fixture-Only-18-not-a-production-password'
 export const hash = value => createHash('sha256').update(value).digest('hex')
@@ -14,6 +14,22 @@ export const fixtures = Array.from({ length: 27 }, (_, index) => ({
   note: index === 0 ? '这是虚构资料，用于测试长留言。\n'.repeat(28) + '<img src=x onerror=alert(1)>' : index === 1 ? 'X'.repeat(500) : '各自发光，也常常相聚。（测试资料）',
   updatedAt: '2026-11-01T10:00:00.000Z', version: 1,
 }))
+
+export const staticFixtures = fixtures.map((c, index) => ({ ...c, note: index === 0 ? '这是虚构资料，用于测试长留言。\n'.repeat(8) + '<img src=x onerror=alert(1)>' : index === 1 ? 'X'.repeat(300) : c.note }))
+
+export function encryptFixture(payload = { schema: 1, contacts: staticFixtures }, password = fixturePassword) {
+  const salt = randomBytes(16), iv = randomBytes(12)
+  const format = 'class-directory-encrypted-v1'
+  const header = { format, kdf: { name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt: salt.toString('base64') }, cipher: { name: 'AES-GCM', keyLength: 256, iv: iv.toString('base64'), tagLength: 128 } }
+  const protectedHeader = Buffer.from(JSON.stringify(header)).toString('base64')
+  const key = pbkdf2Sync(password, salt, 600000, 32, 'sha256')
+  try {
+    const cipher = createCipheriv('aes-256-gcm', key, iv)
+    cipher.setAAD(Buffer.from(protectedHeader))
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload)), cipher.final(), cipher.getAuthTag()]).toString('base64')
+    return { format, protected: protectedHeader, ciphertext }
+  } finally { key.fill(0) }
+}
 
 export async function createFixture(origin = 'http://127.0.0.1:5190') {
   const proxy = await getPlatformProxy({

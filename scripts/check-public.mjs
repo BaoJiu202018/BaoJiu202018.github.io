@@ -4,29 +4,31 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { createHash } from 'node:crypto'
+import { decryptDirectory, parseEncryptedFile } from '../public/assets/encrypted-directory.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const ignored = new Set(['node_modules', '.git', '.wrangler', 'test-results', 'playwright-report'])
-const publicFiles = new Set(['index.html', 'assets/app.js', 'assets/config.js', 'assets/site.css', 'assets/seal.svg', 'assets/campus.svg', 'assets/share-cover.svg', 'assets/share-cover.png'])
-const sourceFiles = new Set(['.gitignore', '.github/workflows/pages.yml', 'package.json', 'package-lock.json', 'tsconfig.json', 'playwright.config.mjs', 'scripts/dev.mjs', 'scripts/check-public.mjs', 'scripts/import.mjs', 'worker/wrangler.jsonc', 'worker/src/index.ts', 'worker/src/import.ts', 'worker/migrations/0001.sql', 'tests/support.mjs', 'tests/api.test.mjs', 'tests/import.test.mjs', 'tests/public.test.mjs', 'tests/ui.spec.mjs'])
+const publicFiles = new Set(['index.html', 'assets/app.js', 'assets/config.js', 'assets/encrypted-directory.js', 'assets/directory.encrypted.json', 'assets/site.css', 'assets/seal.svg', 'assets/campus.svg', 'assets/share-cover.svg', 'assets/share-cover.png'])
+const sourceFiles = new Set(['.gitignore', '.github/workflows/pages.yml', 'package.json', 'package-lock.json', 'tsconfig.json', 'playwright.config.mjs', 'scripts/dev.mjs', 'scripts/check-public.mjs', 'scripts/import.mjs', 'worker/wrangler.jsonc', 'worker/src/index.ts', 'worker/src/import.ts', 'worker/migrations/0001.sql', 'tests/support.mjs', 'tests/api.test.mjs', 'tests/import.test.mjs', 'tests/public.test.mjs', 'tests/encrypted-directory.test.mjs', 'tests/ui.spec.mjs'])
 
-export function releaseIssues(configSource, worker, html) {
+export function releaseIssues(configSource, html) {
   const issues = []
-  const config = /^\s*export const API_BASE = (['"])([^'"\r\n]*)\1;?\s*export const PREVIEW = false;?\s*$/.exec(configSource)
-  try {
-    const url = new URL(config?.[2] || '')
-    if (url.protocol !== 'https:' || url.origin !== config[2] || !url.hostname.endsWith('.workers.dev')) throw Error()
-  } catch { issues.push('API_OR_PREVIEW_INVALID') }
-  const db = worker?.d1_databases?.find(binding => binding.binding === 'DB')
-  if (!db || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(db.database_id || '') || /^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(db.database_id)) issues.push('DATABASE_INVALID')
-  if (!/^[a-f0-9]{32}$/i.test(worker?.account_id || '') || /^0{32}$/.test(worker.account_id)) issues.push('ACCOUNT_INVALID')
-  if (!db?.database_id || worker?.vars?.IMPORT_TARGET !== db.database_id) issues.push('IMPORT_TARGET_MISMATCH')
-  if (worker?.vars?.ALLOWED_ORIGIN !== 'https://baojiu202018.github.io') issues.push('CORS_ORIGIN_INVALID')
-  if (/2020级|拟托管|拟使用|上线前须核实|真实资料仅在核对/.test(html)) issues.push('UNFINISHED_COPY')
-  for (const text of ['2017级（2020届）18班', '<b>2017</b><span>相遇的起点</span>', '原18班微信群回复网站发布消息，联系发起人', '共享口令无法识别个人', '班外持有者也可能访问', '保留30天', '手动清理', '原腾讯文档与原系统历史备份', '境外处理']) {
+  if (!/^\s*export const ENCRYPTED_DATA_PATH = (['"])assets\/directory\.encrypted\.json\1;?\s*export const PREVIEW = false;?\s*$/.test(configSource)) issues.push('ENCRYPTED_PATH_OR_PREVIEW_INVALID')
+  if (/2020级|拟托管|拟使用|上线前须核实|口令由服务器校验|独立服务器校验口令|口令更换后原会话失效/.test(html)) issues.push('UNFINISHED_COPY')
+  for (const text of ['2017级（2020届）18班', '<b>2017</b><span>相遇的起点</span>', '原18班微信群回复网站发布消息，联系发起人', '共享口令无法识别个人', '班外持有者也可能访问', '保留30天', '手动清理', '原腾讯文档与原系统历史备份', '境外处理', '口令不发送到服务器', '公开 GitHub 仓库及其历史', '离线尝试解密', '没有服务端限流或访问撤销', '更换口令不能使已下载的旧密文失效', '只清除本页资料', '原 Cloudflare Workers 与 D1 中的受保护资料副本仍保留']) {
     if (!html.includes(text)) issues.push('REQUIRED_COPY_MISSING')
   }
   return [...new Set(issues)]
+}
+
+export async function verifyEncryptedRecords(bytes, privateBytes, records, password) {
+  if (!bytes.equals(privateBytes)) throw Error('ENCRYPTED_SOURCE_MISMATCH')
+  const contacts = await decryptDirectory(bytes, password)
+  const expected = records.filter(c => !c.deleted).map(c => ({ id: c._id, name: c.name, contactKind: c.contactKind, contactText: c.contactText, city: c.city || '', note: c.note || '', updatedAt: c.updatedAt, version: c.version }))
+  const sorted = list => list.map(c => Object.fromEntries(Object.entries(c).sort(([a], [b]) => a.localeCompare(b, 'en')))).sort((a, b) => a.id.localeCompare(b.id, 'en'))
+  if (JSON.stringify(sorted(contacts)) !== JSON.stringify(sorted(expected))) throw Error('ENCRYPTED_RECORDS_MISMATCH')
+  return 'decrypted comparison performed'
 }
 
 function emptyViolations() {
@@ -85,33 +87,45 @@ export function auditGit(directory, records = [], secrets = []) {
 }
 
 async function privateInputs() {
-  let records = [], secrets = []
+  let records = [], secrets = [], password, privateBytes
   let privateComparison = 'not available', secretComparison = 'not available'
-  try {
-    const source = fileURLToPath(new URL('../../private/local-directory.sqlite', import.meta.url))
+  const folder = fileURLToPath(new URL('../../private', import.meta.url))
+  async function privatePath(name) {
+    const dir = await lstat(folder)
+    if (!dir.isDirectory() || dir.isSymbolicLink() || (dir.mode & 0o777) !== 0o700 || await realpath(folder) !== folder) throw Error('PRIVATE_DIRECTORY_INVALID')
+    const source = join(folder, name)
     const stat = await lstat(source)
-    if (!stat.isFile() || stat.isSymbolicLink()) throw Error('PRIVATE_DATABASE_INVALID')
-    const db = new DatabaseSync(source, { readOnly: true })
-    try { records = db.prepare("SELECT value FROM documents WHERE collection = 'contacts'").all().map(r => JSON.parse(r.value)) }
-    finally { db.close() }
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o600) throw Error('PRIVATE_FILE_INVALID')
+    return source
+  }
+  try {
+    const db = new DatabaseSync(await privatePath('local-directory.sqlite'), { readOnly: true })
+    try {
+      db.exec('BEGIN')
+      records = db.prepare("SELECT value FROM documents WHERE collection = 'contacts'").all().map(r => JSON.parse(r.value))
+    } finally { db.close() }
     privateComparison = 'read-only comparison performed'
   } catch (error) { if (error.code !== 'ENOENT') throw Error('PRIVATE_COMPARISON_FAILED') }
   try {
-    const source = fileURLToPath(new URL('../../private/website-production-secrets.json', import.meta.url))
-    const stat = await lstat(source)
-    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o600) throw Error('PRIVATE_SECRETS_INVALID')
-    const value = JSON.parse(await readFile(source, 'utf8'))
+    const value = JSON.parse(await readFile(await privatePath('website-production-secrets.json'), 'utf8'))
     secrets = ['memberPassword', 'adminSecret', 'ratePepper', 'classPasswordHash', 'adminImportHash'].map(key => value[key])
     if (secrets.some(value => typeof value !== 'string' || value.length < 20)) throw Error('PRIVATE_SECRETS_INVALID')
+    password = (await readFile(await privatePath('website-member-password.txt'), 'utf8')).trim()
+    if (password !== value.memberPassword || !/^BaoJiuZhong18-[A-Za-z0-9_-]{32}$/.test(password) || createHash('sha256').update(password).digest('hex') !== value.classPasswordHash) throw Error('PRIVATE_PASSWORD_MISMATCH')
     secretComparison = 'read-only comparison performed'
   } catch (error) { if (error.code !== 'ENOENT') throw Error('SECRET_COMPARISON_FAILED') }
-  return { records, secrets, privateComparison, secretComparison }
+  try { privateBytes = await readFile(await privatePath('website-directory.encrypted.json')) }
+  catch (error) { if (error.code !== 'ENOENT') throw Error('ENCRYPTED_SOURCE_FAILED') }
+  return { records, secrets, password, privateBytes, privateComparison, secretComparison }
 }
 
 async function main() {
   const args = process.argv.slice(2)
   if (new Set(args).size !== args.length || args.some(arg => !['--release', '--git', '--require-private'].includes(arg))) throw Error('INVALID_ARGUMENTS')
-  const { records, secrets, privateComparison, secretComparison } = await privateInputs()
+  const { records, secrets, password, privateBytes, privateComparison, secretComparison } = await privateInputs()
+  const encryptedBytes = await readFile(join(root, 'public/assets/directory.encrypted.json'))
+  parseEncryptedFile(encryptedBytes)
+  const encryptedComparison = privateBytes && password && privateComparison !== 'not available' ? await verifyEncryptedRecords(encryptedBytes, privateBytes, records, password) : 'not available'
   const violations = emptyViolations()
   let publicBytes = 0
   async function scan(folder, relative = '') {
@@ -132,16 +146,19 @@ async function main() {
   const release = args.includes('--release')
   const blockers = release ? releaseIssues(
     await readFile(join(root, 'public/assets/config.js'), 'utf8'),
-    JSON.parse(await readFile(join(root, 'worker/wrangler.jsonc'), 'utf8')),
     await readFile(join(root, 'public/index.html'), 'utf8'),
   ) : []
   if (args.includes('--require-private')) {
     if (privateComparison === 'not available' || records.length === 0) blockers.push('PRIVATE_COMPARISON_REQUIRED')
     if (secretComparison === 'not available') blockers.push('SECRET_COMPARISON_REQUIRED')
+    if (encryptedComparison === 'not available') blockers.push('ENCRYPTED_COMPARISON_REQUIRED')
+  }
+  for (const file of ['app.js', 'config.js', 'encrypted-directory.js']) {
+    if (/workers\.dev|API_BASE|\/auth\/(?:login|logout)|localStorage|sessionStorage|indexedDB|serviceWorker/.test(await readFile(join(root, 'public/assets', file), 'utf8'))) blockers.push('STATIC_CLIENT_BOUNDARY_INVALID')
   }
   const git = args.includes('--git') ? auditGit(root, records, secrets) : null
   if (publicBytes > 500000) throw Error('Public assets exceed the 500KB budget')
-  console.log(JSON.stringify({ mode: release ? 'release' : 'source', publicBytes, privateComparison, secretComparison, violations, git, releaseBlockers: blockers }))
+  console.log(JSON.stringify({ mode: release ? 'release' : 'source', publicBytes, privateComparison, secretComparison, encryptedComparison, violations, git, releaseBlockers: blockers }))
   if (Object.values(violations).some(Boolean) || blockers.length || (git && Object.values(git.violations).some(Boolean))) process.exitCode = 1
 }
 

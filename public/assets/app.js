@@ -1,9 +1,11 @@
-import { API_BASE, PREVIEW } from './config.js'
+import { ENCRYPTED_DATA_PATH, PREVIEW } from './config.js'
+import { loadEncryptedDirectory } from './encrypted-directory.js'
 
 const $ = id => document.getElementById(id)
 const kinds = { phone: '电话', wechat: '微信', qq: 'QQ', email: '邮箱', other: '联系方式' }
-let token = ''
+let directory = null
 let expiresAt = 0
+let pending = false
 let sessionTimer
 let searchTimer
 let toastTimer
@@ -21,6 +23,12 @@ function notify(message) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; $('toast').textContent = '' }, 3000)
 }
 
+function setPending(value) {
+  pending = value
+  $('login-submit').disabled = value
+  $('login-submit').textContent = value ? '正在解密…' : '进入同窗录 →'
+}
+
 function clearDetails() {
   selectedContact = null
   if ($('contact-dialog').open) $('contact-dialog').close()
@@ -28,7 +36,7 @@ function clearDetails() {
 }
 
 function lock(message = '') {
-  token = ''
+  directory = null
   expiresAt = 0
   generation++
   controller.abort()
@@ -38,6 +46,7 @@ function lock(message = '') {
   clearTimeout(toastTimer)
   nextCursor = null
   clearDetails()
+  setPending(false)
   $('toast').hidden = true
   $('toast').textContent = ''
   $('contacts').replaceChildren()
@@ -47,6 +56,7 @@ function lock(message = '') {
   $('directory-error').textContent = ''
   $('directory-empty').hidden = true
   $('load-more').hidden = true
+  $('clear-filters').hidden = true
   $('search').value = ''
   $('city').replaceChildren(new Option('全部城市', ''))
   $('class-password').value = ''
@@ -58,26 +68,9 @@ function lock(message = '') {
   $('login-error').textContent = message
 }
 
-async function request(path, { method = 'GET', body, bearer = token, signal = controller.signal } = {}) {
-  if (!API_BASE) throw new Error('通讯录后端尚未接入，暂时不能登录。此页面不包含同学资料。')
-  const response = await fetch(`${API_BASE}${path}`, {
-    method, signal, cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer',
-    headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  })
-  const result = await response.json()
-  if (!response.ok || !result.ok) {
-    const error = new Error(result.error?.message || '服务暂时无法连接，请稍后重试。')
-    error.status = response.status
-    throw error
-  }
-  return result.data
-}
-
-function fail(error) {
-  if (error.name === 'AbortError') return
-  lock(error.status === 401 ? '会话已失效，请重新输入班级口令。' : '暂时无法读取通讯录，已清除本页资料。请检查网络后重新登录。')
-  $('class-password').focus({ preventScroll: true })
+function unlocked() {
+  if (directory && Date.now() >= expiresAt) lock('本页解锁已到期，请重新输入班级口令。')
+  return directory !== null
 }
 
 function node(tag, className, text) {
@@ -106,51 +99,37 @@ function card(contact) {
   return button
 }
 
-async function loadContacts(append = false) {
-  const current = ++generation
-  controller.abort()
-  controller = new AbortController()
+function loadContacts(append = false) {
+  if (!unlocked()) return
   clearDetails()
   if (!append) $('contacts').replaceChildren()
-  $('directory-count').textContent = '正在翻开同窗录…'
-  $('directory-empty').hidden = true
-  $('load-more').disabled = true
-  $('load-more').hidden = true
-  const query = $('search').value.trim()
+  const query = $('search').value.trim().toLowerCase()
   const city = $('city').value
+  const matches = directory.filter(c => c.name.toLowerCase().includes(query) && (!city || c.city === (city === '__unknown__' ? '' : city)))
+  const cursor = append ? nextCursor : 0
+  $('contacts').append(...matches.slice(cursor, cursor + 12).map(card))
+  $('directory-count').textContent = query || city ? `找到 ${matches.length} 位同学 · 共 ${directory.length} 位` : `共 ${directory.length} 位老同学，常联系。`
   $('clear-filters').hidden = !query && !city
-  try {
-    const result = await request(`/contacts?${new URLSearchParams({ query, city, cursor: String(append ? nextCursor : 0), limit: '12' })}`)
-    if (current !== generation || !token) return
-    $('contacts').append(...result.items.map(card))
-    $('directory-count').textContent = query || city ? `找到 ${result.total} 位同学 · 共 ${result.totalAll} 位` : `共 ${result.totalAll} 位老同学，常联系。`
-    const options = [new Option('全部城市', '')]
-    for (const item of result.cities) options.push(new Option(`${item.name || '城市待补充'} · ${item.count}`, item.name || '__unknown__'))
-    $('city').replaceChildren(...options)
-    $('city').value = city
-    $('directory-empty').hidden = result.total !== 0
-    nextCursor = result.nextCursor
-    $('load-more').hidden = nextCursor === null
-    $('load-more').disabled = false
-  } catch (error) { if (current === generation) fail(error) }
+  $('directory-empty').hidden = matches.length !== 0
+  nextCursor = cursor + 12 < matches.length ? cursor + 12 : null
+  $('load-more').hidden = nextCursor === null
+  $('load-more').disabled = false
 }
 
-async function openContact(id) {
-  const current = ++generation
+function openContact(id) {
+  if (!unlocked()) return
   clearDetails()
-  try {
-    const contact = await request(`/contacts/${encodeURIComponent(id)}`)
-    if (current !== generation || !token) return
-    selectedContact = contact
-    $('contact-avatar').textContent = Array.from(contact.name)[0] || '同'
-    $('contact-name').textContent = contact.name
-    $('contact-city').textContent = contact.city || '城市待补充'
-    $('contact-note').textContent = contact.note || '还没有留下近况。下一次见面，再慢慢聊。'
-    $('contact-kind').textContent = kinds[contact.contactKind] || '联系方式'
-    $('contact-text').textContent = contact.contactText
-    $('contact-updated').textContent = displayDate(contact.updatedAt)
-    $('contact-dialog').showModal()
-  } catch (error) { if (current === generation) fail(error) }
+  const contact = directory.find(c => c.id === id)
+  if (!contact) return
+  selectedContact = contact
+  $('contact-avatar').textContent = Array.from(contact.name)[0] || '同'
+  $('contact-name').textContent = contact.name
+  $('contact-city').textContent = contact.city || '城市待补充'
+  $('contact-note').textContent = contact.note || '还没有留下近况。下一次见面，再慢慢聊。'
+  $('contact-kind').textContent = kinds[contact.contactKind] || '联系方式'
+  $('contact-text').textContent = contact.contactText
+  $('contact-updated').textContent = displayDate(contact.updatedAt)
+  $('contact-dialog').showModal()
 }
 
 $('toggle-password').addEventListener('click', () => {
@@ -163,39 +142,47 @@ $('toggle-password').addEventListener('click', () => {
 
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault()
-  if (!$('login-form').reportValidity()) return
-  $('login-submit').disabled = true
+  if (pending || !$('login-form').reportValidity()) return
+  setPending(true)
   $('login-error').textContent = ''
   const current = ++generation
-  const password = $('class-password').value
+  controller.abort()
+  controller = new AbortController()
+  let password = $('class-password').value
   $('class-password').value = ''
   try {
-    const session = await request('/auth/login', { method: 'POST', body: { password }, bearer: '' })
+    const contacts = await loadEncryptedDirectory(ENCRYPTED_DATA_PATH, password, controller.signal)
     if (current !== generation) return
-    token = session.token
-    expiresAt = session.expiresAt
-    sessionTimer = setTimeout(() => lock('会话已到期，请重新输入班级口令。'), Math.max(0, expiresAt - Date.now()))
+    const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0
+    directory = contacts.sort((a, b) => compare(a.name, b.name) || compare(a.id, b.id))
+    expiresAt = Date.now() + 12 * 3600000
+    sessionTimer = setTimeout(() => lock('本页解锁已到期，请重新输入班级口令。'), 12 * 3600000)
+    const cities = new Map()
+    for (const c of directory) cities.set(c.city, (cities.get(c.city) || 0) + 1)
+    $('city').replaceChildren(new Option('全部城市', ''), ...[...cities].sort(([a], [b]) => compare(a, b)).map(([city, count]) => new Option(`${city || '城市待补充'} · ${count}`, city || '__unknown__')))
     $('login-panel').hidden = true
     $('member-panel').hidden = false
-    await loadContacts()
-    if (token) $('search').focus({ preventScroll: true })
+    loadContacts()
+    if (unlocked()) $('search').focus({ preventScroll: true })
   } catch (error) {
-    if (current === generation && error.name !== 'AbortError') $('login-error').textContent = error.message === 'Failed to fetch' ? '无法连接通讯录，请检查网络后重试。' : error.message
-  } finally { $('login-submit').disabled = false }
+    if (current === generation && error.name !== 'AbortError') {
+      lock(error instanceof TypeError ? '无法读取加密通讯录，请检查网络后重试。' : error.message)
+      $('class-password').focus({ preventScroll: true })
+    }
+  } finally {
+    password = ''
+    if (current === generation) setPending(false)
+  }
 })
 
-$('logout').addEventListener('click', async () => {
-  const bearer = token
+$('logout').addEventListener('click', () => {
   lock()
   $('class-password').focus({ preventScroll: true })
-  try { await request('/auth/logout', { method: 'POST', body: {}, bearer }) }
-  catch (error) { if (error.status !== 401) notify('本页资料已清除；服务端退出未确认，会话将在到期后失效。') }
 })
 
 $('search').addEventListener('input', () => {
   clearTimeout(searchTimer)
-  generation++
-  controller.abort()
+  if (!unlocked()) return
   $('contacts').replaceChildren()
   clearDetails()
   $('directory-count').textContent = '正在筛选…'
@@ -214,10 +201,12 @@ $('load-more').addEventListener('click', () => { if (nextCursor !== null) loadCo
 $('close-contact').addEventListener('click', clearDetails)
 $('contact-dialog').addEventListener('close', clearDetails)
 $('copy-contact').addEventListener('click', async () => {
-  if (!selectedContact || !token) return
-  try { await navigator.clipboard.writeText(selectedContact.contactText); notify('联系方式已复制，请勿转发至班外。') }
-  catch { notify('浏览器暂不支持复制，请长按联系方式手动复制。') }
+  if (!selectedContact || !unlocked()) return
+  const current = generation
+  try { await navigator.clipboard.writeText(selectedContact.contactText); if (current === generation && unlocked()) notify('联系方式已复制，请勿转发至班外。') }
+  catch { if (current === generation && unlocked()) notify('浏览器暂不支持复制，请长按联系方式手动复制。') }
 })
-window.addEventListener('offline', () => { if (token) lock('网络已断开，本页资料已清除。联网后请重新登录。') })
+window.addEventListener('offline', () => { if (directory || pending) lock('网络已断开，本页资料已清除。联网后请重新输入口令。') })
 window.addEventListener('pagehide', () => lock())
-document.addEventListener('visibilitychange', () => { if (token && Date.now() >= expiresAt) lock('会话已到期，请重新输入班级口令。') })
+window.addEventListener('pageshow', () => unlocked())
+document.addEventListener('visibilitychange', () => unlocked())

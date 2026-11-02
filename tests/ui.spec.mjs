@@ -1,37 +1,54 @@
 import { test, expect } from '@playwright/test'
-import { fixturePassword, fixtures } from './support.mjs'
+import { fixturePassword, staticFixtures as fixtures, encryptFixture } from './support.mjs'
 
-async function login(page) {
-  await page.locator('#class-password').fill(fixturePassword)
+const encryptedPath = '**/assets/directory.encrypted.json'
+async function submit(page, password = fixturePassword) {
+  await page.locator('#class-password').fill(password)
   await page.locator('#consent').check()
   await page.locator('#login-submit').click()
+}
+async function login(page) {
+  await submit(page)
   await expect(page.locator('.contact-card')).toHaveCount(12)
 }
+async function cleared(page) {
+  await expect(page.locator('#login-panel')).toBeVisible()
+  await expect(page.locator('#member-panel')).toBeHidden()
+  await expect(page.locator('.contact-card')).toHaveCount(0)
+  await expect(page.locator('#contact-name')).toBeEmpty()
+  await expect(page.locator('#contact-text')).toBeEmpty()
+  await expect(page.locator('#class-password')).toBeEmpty()
+  expect(await page.evaluate(() => document.body.textContent.includes('示例同学'))).toBe(false)
+}
 
-test('public homepage, real login, all fields, pagination, search, copy, logout and refresh', async ({ page, context }) => {
-  const errors = []
-  const reads = []
+test.beforeEach(async ({ context, baseURL }) => {
+  await context.route('**/*', route => new URL(route.request().url()).origin === new URL(baseURL).origin ? route.continue() : route.abort())
+})
+
+test('same-origin decryption preserves all fields, pagination, search, copy and logout', async ({ page, context, baseURL }) => {
+  const errors = [], requests = []
   page.on('pageerror', error => errors.push(error.message))
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
-  page.on('request', request => { if (request.url().includes('/api/')) reads.push(request.url()) })
+  page.on('request', request => requests.push({ url: request.url(), method: request.method(), body: request.postData(), authorization: request.headers().authorization }))
   await page.goto('/')
   await expect(page.locator('h1')).toContainText('散作满天星')
   await expect(page).toHaveTitle('18班同窗录 — 包头九中2017级（2020届）18班')
   await expect(page.locator('.school-line')).toHaveText('包头市第九中学 · 2017级（2020届）18班')
   await expect(page.locator('.chapter-ribbon')).toContainText('2017相遇的起点')
   await expect(page.locator('.postmark b')).toHaveText('2017')
-  await expect(page.locator('#privacy')).toContainText('原18班微信群回复网站发布消息，联系发起人')
-  expect(await page.evaluate(() => document.body.textContent.includes('2020级'))).toBe(false)
+  await expect(page.locator('#privacy')).toContainText('更换口令不能使已下载的旧密文失效')
   await expect(page.locator('#preview-banner')).toBeVisible()
-  expect(reads).toEqual([])
+  expect(requests.some(r => r.url.endsWith('.json'))).toBe(false)
   expect(await page.evaluate(() => document.body.textContent.includes('示例同学'))).toBe(false)
   await login(page)
+  await expect(page.locator('.session-badge')).toHaveText('已在本机解密')
   await expect(page.locator('#directory-count')).toContainText('27')
   await page.locator('#load-more').click()
   await expect(page.locator('.contact-card')).toHaveCount(24)
   await page.locator('#load-more').click()
   await expect(page.locator('.contact-card')).toHaveCount(27)
   await expect(page.locator('#load-more')).toBeHidden()
+  expect(await page.locator('.card-name').allTextContents()).toEqual(fixtures.map(c => c.name))
   await page.getByRole('button', { name: '查看示例同学01的名片', exact: true }).click()
   await expect(page.locator('#contact-dialog')).toBeVisible()
   await expect(page.locator('#contact-city')).toHaveText('城市待补充')
@@ -43,7 +60,9 @@ test('public homepage, real login, all fields, pagination, search, copy, logout 
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await page.locator('#copy-contact').click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(fixtures[0].contactText)
-  await page.locator('#close-contact').click()
+  await page.evaluate(() => navigator.clipboard.writeText(''))
+  await page.keyboard.press('Escape')
+  await expect(page.locator('#contact-name')).toBeEmpty()
   await page.locator('#city').selectOption('__unknown__')
   await expect(page.locator('.contact-card')).toHaveCount(9)
   await page.locator('#search').fill('不存在')
@@ -52,79 +71,158 @@ test('public homepage, real login, all fields, pagination, search, copy, logout 
   await expect(page.locator('.contact-card')).toHaveCount(12)
   await page.locator('#search').fill('示例同学02')
   await expect(page.locator('.contact-card')).toHaveCount(1)
-  const width = await page.evaluate(() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth }))
-  expect(width.scroll).toBeLessThanOrEqual(width.viewport)
-  expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 })
-  await page.reload()
-  await expect(page.locator('#login-panel')).toBeVisible()
-  await expect(page.locator('.contact-card')).toHaveCount(0)
-  await login(page)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  expect(await page.evaluate(async () => ({ local: localStorage.length, session: sessionStorage.length, databases: (await indexedDB.databases()).length, workers: (await navigator.serviceWorker.getRegistrations()).length }))).toEqual({ local: 0, session: 0, databases: 0, workers: 0 })
   await page.locator('#logout').click()
-  await expect(page.locator('#member-panel')).toBeHidden()
-  await expect(page.locator('#class-password')).toBeEmpty()
-  expect(await page.evaluate(() => document.body.textContent.includes('示例同学'))).toBe(false)
+  await cleared(page)
+  expect(requests.filter(r => r.url.endsWith('directory.encrypted.json'))).toHaveLength(1)
+  expect(requests.every(r => r.method === 'GET' && r.body === null && !r.authorization && new URL(r.url).origin === new URL(baseURL).origin)).toBe(true)
+  expect(JSON.stringify(requests)).not.toContain(fixturePassword)
   expect(errors).toEqual([])
 })
 
-test('wrong password, 401, backend failure and offline clear private content', async ({ page, context }) => {
-  const errors = []
-  page.on('pageerror', error => errors.push(error.message))
+test('wrong password and download or format failures stay locked', async ({ page }) => {
   await page.goto('/')
-  await page.locator('#class-password').fill('wrong-password')
   await page.locator('#toggle-password').click()
   await expect(page.locator('#class-password')).toHaveAttribute('type', 'text')
-  await page.locator('#consent').check()
-  await page.locator('#login-submit').click()
-  await expect(page.locator('#login-error')).toContainText('不正确')
-  await expect(page.locator('.contact-card')).toHaveCount(0)
+  await submit(page, 'wrong-password')
+  await expect(page.locator('#login-error')).toContainText('口令不正确或加密文件已损坏')
+  await cleared(page)
+  for (const response of [
+    { status: 503, body: '', expected: '无法下载' },
+    { status: 200, body: '{}', expected: '格式不正确' },
+    { status: 200, body: 'x'.repeat(262145), expected: '格式不正确' },
+  ]) {
+    await page.route(encryptedPath, route => route.fulfill({ status: response.status, contentType: 'application/json', body: response.body }))
+    await submit(page)
+    await expect(page.locator('#login-error')).toContainText(response.expected)
+    await cleared(page)
+    await page.unroute(encryptedPath)
+  }
+  await page.route(encryptedPath, route => route.abort('failed'))
+  await submit(page)
+  await expect(page.locator('#login-error')).toContainText('检查网络')
+  await cleared(page)
+  await page.unroute(encryptedPath)
   await login(page)
-  await page.route('**/api/contacts?**', route => route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { message: '会话已失效' } }) }))
-  await page.locator('#search').fill('01')
-  await expect(page.locator('#login-panel')).toBeVisible()
-  await expect(page.locator('#login-error')).toContainText('会话已失效')
-  await expect(page.locator('.contact-card')).toHaveCount(0)
-  await page.unroute('**/api/contacts?**')
-  await login(page)
-  await page.route('**/api/contacts/*', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { message: '暂时不可用' } }) }))
-  await page.locator('.contact-card').first().click()
-  await expect(page.locator('#login-error')).toContainText('已清除')
-  await expect(page.locator('.contact-card')).toHaveCount(0)
-  await page.unroute('**/api/contacts/*')
-  await login(page)
-  await page.locator('.contact-card').first().click()
-  await expect(page.locator('#contact-dialog')).toBeVisible()
-  await context.setOffline(true)
-  await expect(page.locator('#login-panel')).toBeVisible()
-  await expect(page.locator('#contact-dialog')).not.toBeVisible()
-  await expect(page.locator('#contact-name')).toBeEmpty()
-  await expect(page.locator('.contact-card')).toHaveCount(0)
-  await context.setOffline(false)
-  expect(errors).toEqual([])
 })
 
-test('expiry timer clears displayed data without another user request', async ({ page }) => {
+test('reload, offline and independent pages clear only their own plaintext', async ({ page, context }) => {
   await page.goto('/')
-  await page.route('**/api/auth/login', async route => {
-    const response = await route.fetch()
-    const result = await response.json()
-    result.data.expiresAt = Date.now() + 2000
-    await route.fulfill({ response, json: result })
-  })
   await login(page)
-  await expect(page.locator('#login-error')).toContainText('已到期', { timeout: 10000 })
-  await expect(page.locator('.contact-card')).toHaveCount(0)
+  const other = await context.newPage()
+  await other.goto('/')
+  await cleared(other)
+  await login(other)
+  await page.locator('#logout').click()
+  await cleared(page)
+  await expect(other.locator('.contact-card')).toHaveCount(12)
+  await other.reload()
+  await cleared(other)
+  await login(page)
+  await page.locator('.contact-card').first().click()
+  await context.setOffline(true)
+  await cleared(page)
+  await expect(page.locator('#login-error')).toContainText('网络已断开')
+  await context.setOffline(false)
+  await login(page)
+  await page.reload()
+  await cleared(page)
+  await other.close()
 })
 
-test('320px, keyboard labels, reduced motion and unconfigured backend fail honestly', async ({ page }) => {
-  await page.route('**/assets/config.js', route => route.fulfill({ contentType: 'text/javascript', body: "export const API_BASE = ''; export const PREVIEW = false;" }))
+test('local 12-hour lock removes plaintext without server traffic', async ({ page }) => {
+  await page.clock.install()
+  await page.goto('/')
+  await login(page)
+  await page.locator('.contact-card').first().click()
+  await page.clock.fastForward(12 * 3600000 + 1)
+  await expect(page.locator('#login-error')).toContainText('已到期')
+  await cleared(page)
+})
+
+test('leaving during download cancels pending unlock and duplicate submission', async ({ page }) => {
+  let release, reached, finished
+  const gate = new Promise(resolve => { release = resolve })
+  const requested = new Promise(resolve => { reached = resolve })
+  const done = new Promise(resolve => { finished = resolve })
+  let requests = 0
+  await page.route(encryptedPath, async route => {
+    requests++
+    reached()
+    await gate
+    try { await route.fulfill({ contentType: 'application/json', body: JSON.stringify(encryptFixture()) }) } catch {} finally { finished() }
+  })
+  await page.goto('/')
+  await submit(page)
+  await requested
+  await expect(page.locator('#login-submit')).toBeDisabled()
+  await page.locator('#login-form').dispatchEvent('submit')
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')))
+  release()
+  await done
+  await cleared(page)
+  expect(requests).toBe(1)
+  await page.unroute(encryptedPath)
+  await login(page)
+})
+
+test('a late Web Crypto result cannot unlock after an offline event', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = crypto.subtle.decrypt.bind(crypto.subtle)
+    crypto.subtle.decrypt = async (...args) => {
+      const value = await original(...args)
+      window.decryptStarted = true
+      await new Promise(resolve => { window.releaseDecrypt = resolve })
+      return value
+    }
+  })
+  await page.goto('/')
+  await submit(page)
+  await page.waitForFunction(() => window.decryptStarted)
+  await page.evaluate(async () => {
+    window.dispatchEvent(new Event('offline'))
+    window.releaseDecrypt()
+    await new Promise(requestAnimationFrame)
+  })
+  await cleared(page)
+  await expect(page.locator('#login-error')).toContainText('网络已断开')
+})
+
+test('empty encrypted directory and unsupported crypto fail honestly', async ({ page }) => {
+  await page.route(encryptedPath, route => route.fulfill({ contentType: 'application/json', body: JSON.stringify(encryptFixture({ schema: 1, contacts: [] })) }))
+  await page.goto('/')
+  await submit(page)
+  await expect(page.locator('#member-panel')).toBeVisible()
+  await expect(page.locator('#directory-empty')).toBeVisible()
+  await expect(page.locator('#directory-count')).toContainText('0')
+  await page.locator('#logout').click()
+  await page.evaluate(() => Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} }))
+  await submit(page)
+  await expect(page.locator('#login-error')).toContainText('不支持安全解密')
+  await cleared(page)
+})
+
+test('320px, keyboard labels, reduced motion and missing configuration', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 })
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/')
+  await login(page)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.locator('.contact-card').nth(1).click()
+  await expect(page.locator('#contact-note')).toHaveText(fixtures[1].note)
+  expect(await page.locator('#contact-dialog').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+  await page.locator('#close-contact').click()
+  await page.locator('#logout').click()
+  await cleared(page)
+  await page.route('**/assets/config.js', route => route.fulfill({ contentType: 'text/javascript', body: "export const ENCRYPTED_DATA_PATH = ''; export const PREVIEW = false;" }))
+  await page.reload()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.getByLabel('班级口令', { exact: true }).fill('example-only')
   await page.locator('#consent').check()
-  await page.locator('#login-submit').click()
-  await expect(page.locator('#login-error')).toContainText('尚未接入')
-  await expect(page.locator('.contact-card')).toHaveCount(0)
+  await page.locator('#login-submit').focus()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('#login-error')).toContainText('尚未配置')
+  await cleared(page)
   expect(await page.evaluate(() => document.querySelectorAll('img:not([alt])').length)).toBe(0)
 })
