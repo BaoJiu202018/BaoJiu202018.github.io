@@ -48,6 +48,15 @@ test('deployed artifact has a valid envelope and client has no server or persist
   }
 })
 
+test('public HTML blocks native submission if the app script is unavailable', async () => {
+  const page = await readFile(new URL('../public/index.html', import.meta.url), 'utf8')
+  assert.match(page, /<meta http-equiv="Content-Security-Policy" content="[^"]*connect-src 'self';[^"]*form-action 'none'">/)
+  assert.ok(page.indexOf('Content-Security-Policy') < page.indexOf('<script'))
+  const input = page.match(/<input\b[^>]*\bid="class-password"[^>]*>/)?.[0]
+  assert.ok(input)
+  assert.doesNotMatch(input, /\bname\s*=/)
+})
+
 test('public artwork and metadata distinguish enrolment and graduation years', async () => {
   const read = path => readFile(new URL('../public/' + path, import.meta.url), 'utf8')
   const [page, seal, cover] = await Promise.all([read('index.html'), read('assets/seal.svg'), read('assets/share-cover.svg')])

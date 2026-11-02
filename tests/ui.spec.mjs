@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
 import { fixturePassword, staticFixtures as fixtures, encryptFixture } from './support.mjs'
 
 const encryptedPath = '**/assets/directory.encrypted.json'
@@ -23,6 +24,25 @@ async function cleared(page) {
 
 test.beforeEach(async ({ context, baseURL }) => {
   await context.route('**/*', route => new URL(route.request().url()).origin === new URL(baseURL).origin ? route.continue() : route.abort())
+})
+
+test('script failure cannot submit a password without server CSP headers', async ({ page, baseURL }) => {
+  const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8')
+  await page.route(baseURL + '/', route => route.fulfill({ contentType: 'text/html', body: html }))
+  await page.route('**/assets/app.js', route => route.abort())
+  await page.goto('/')
+  await page.locator('#class-password').fill(fixturePassword)
+  await page.locator('#consent').check()
+  expect(await page.locator('#class-password').getAttribute('name')).toBeNull()
+  expect(await page.evaluate(() => [...new FormData(document.getElementById('login-form')).values()])).toEqual([])
+  const requests = []
+  page.on('request', request => requests.push(request.url()))
+  await page.evaluate(() => { window.formBlocked = false; document.addEventListener('securitypolicyviolation', event => { if (event.violatedDirective === 'form-action') window.formBlocked = true }) })
+  await page.locator('#login-submit').click({ noWaitAfter: true })
+  await page.waitForFunction(() => window.formBlocked)
+  expect(requests).toEqual([])
+  expect(page.url()).toBe(baseURL + '/')
+  expect(await page.evaluate(() => getComputedStyle(document.getElementById('member-panel')).display)).toBe('none')
 })
 
 test('same-origin decryption preserves all fields, pagination, search, copy and logout', async ({ page, context, baseURL }) => {

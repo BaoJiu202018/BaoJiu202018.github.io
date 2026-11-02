@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
   <meta name="theme-color" content="#23483d">
   <meta name="description" content="包头市第九中学2017级（2020届）18班的同窗小站。把老同学放在通讯录里，也放在心里。通讯录仅向持有班级口令的同学开放。">
   <meta name="referrer" content="no-referrer">
@@ -54,7 +55,7 @@
         <div id="login-panel" class="login-panel">
           <div class="login-illustration" aria-hidden="true"><div class="file-card back"><span>CLASSMATE</span></div><div class="file-card front"><span class="file-number">18</span><div class="file-lines"><i></i><i></i><i></i></div><b>同窗录</b><small>ONLY FOR OUR CLASS</small></div><div class="illustration-star">✳</div></div>
           <div class="login-content"><p class="eyebrow">A LITTLE SPACE, JUST FOR US</p><h3>老同学，欢迎回来。</h3><p>输入原班级口令，在本机解密查看同学的联络方式与近况。<br class="desktop-break">没有口令？请在原18班微信群回复网站发布消息，联系发起人获取。</p>
-            <form id="login-form"><label for="class-password">班级口令</label><div class="password-field"><input id="class-password" type="password" name="class-password" placeholder="在这里输入班级口令" autocomplete="off" maxlength="180" required aria-describedby="login-error login-help"><button id="toggle-password" type="button" aria-label="显示口令" aria-pressed="false">显示</button></div><label class="consent"><input id="consent" type="checkbox" required><span>我已阅读<a href="#privacy">使用与隐私说明</a>，仅将资料用于班内联络。</span></label><button id="login-submit" class="button primary" type="submit">进入同窗录 <span aria-hidden="true">→</span></button><p id="login-error" class="form-error" role="alert"></p><p id="login-help" class="form-help">口令不发送到服务器；资料仅在本页内存解密，关闭或刷新后需要重新输入。</p></form>
+            <form id="login-form"><label for="class-password">班级口令</label><div class="password-field"><input id="class-password" type="password" placeholder="在这里输入班级口令" autocomplete="off" maxlength="180" required aria-describedby="login-error login-help"><button id="toggle-password" type="button" aria-label="显示口令" aria-pressed="false">显示</button></div><label class="consent"><input id="consent" type="checkbox" required><span>我已阅读<a href="#privacy">使用与隐私说明</a>，仅将资料用于班内联络。</span></label><button id="login-submit" class="button primary" type="submit">进入同窗录 <span aria-hidden="true">→</span></button><p id="login-error" class="form-error" role="alert"></p><p id="login-help" class="form-help">口令不发送到服务器；资料仅在本页内存解密，关闭或刷新后需要重新输入。</p></form>
           </div>
         </div>
         <div id="member-panel" hidden>
